@@ -57,6 +57,7 @@ public class SecurityConfig {
                         // Clients
                         .requestMatchers("/api/clients/**").hasRole("ADMIN")
                         // Commandes
+                        .requestMatchers(HttpMethod.GET, "/api/commandes/client/**").hasRole("ADMIN")
                         .requestMatchers(HttpMethod.POST, "/api/commandes").authenticated()
                         .requestMatchers(HttpMethod.GET, "/api/commandes/**").authenticated()
                         // Tout le reste nécessite authentification

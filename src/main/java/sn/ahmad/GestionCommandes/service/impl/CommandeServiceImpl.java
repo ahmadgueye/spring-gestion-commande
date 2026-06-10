@@ -9,6 +9,8 @@ import sn.ahmad.GestionCommandes.exception.BusinessException;
 import sn.ahmad.GestionCommandes.exception.ResourceNotFoundException;
 import sn.ahmad.GestionCommandes.repository.*;
 import lombok.RequiredArgsConstructor;
+import org.springframework.security.access.AccessDeniedException;
+import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import sn.ahmad.GestionCommandes.service.CommandeService;
@@ -25,12 +27,18 @@ public class CommandeServiceImpl implements CommandeService {
     private final CommandeRepository commandeRepository;
     private final ClientRepository clientRepository;
     private final ProduitRepository produitRepository;
+    private final UtilisateurRepository utilisateurRepository;
 
     @Override
     @Transactional
     public CommandeResponse creer(CommandeRequest request) {
         Client client = clientRepository.findById(request.getClientId())
                 .orElseThrow(() -> new ResourceNotFoundException("Client non trouvé"));
+
+        if (!isAdmin() && !client.getId().equals(getClientConnecte().getId())) {
+            throw new AccessDeniedException(
+                    "Vous ne pouvez créer une commande que pour votre propre profil client");
+        }
 
         Commande commande = Commande.builder()
                 .dateCommande(LocalDateTime.now())
@@ -58,13 +66,20 @@ public class CommandeServiceImpl implements CommandeService {
 
     @Override
     public CommandeResponse findById(Long id) {
-        return toResponse(commandeRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Commande non trouvée")));
+        Commande commande = commandeRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Commande non trouvée"));
+        verifierAccesCommande(commande);
+        return toResponse(commande);
     }
 
     @Override
     public List<CommandeResponse> findAll() {
-        return commandeRepository.findAll().stream().map(this::toResponse).toList();
+        if (isAdmin()) {
+            return commandeRepository.findAll().stream().map(this::toResponse).toList();
+        }
+        Long clientId = getClientConnecte().getId();
+        return commandeRepository.findByClientId(clientId)
+                .stream().map(this::toResponse).toList();
     }
 
     @Override
@@ -75,8 +90,16 @@ public class CommandeServiceImpl implements CommandeService {
 
     @Override
     public List<CommandeResponse> findEntreDeuxDates(LocalDateTime debut, LocalDateTime fin) {
-        return commandeRepository.findByDateCommandeBetween(debut, fin)
-                .stream().map(this::toResponse).toList();
+        List<Commande> commandes = commandeRepository.findByDateCommandeBetween(debut, fin);
+
+        if (!isAdmin()) {
+            Long clientId = getClientConnecte().getId();
+            commandes = commandes.stream()
+                    .filter(c -> c.getClient().getId().equals(clientId))
+                    .toList();
+        }
+
+        return commandes.stream().map(this::toResponse).toList();
     }
 
     @Override
@@ -84,6 +107,7 @@ public class CommandeServiceImpl implements CommandeService {
     public CommandeResponse valider(Long id) {
         Commande commande = commandeRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Commande non trouvée"));
+        verifierAccesCommande(commande);
 
         if (commande.getStatus() != Commande.StatusCommande.CREATED) {
             throw new BusinessException("Seule une commande CREATED peut être validée");
@@ -109,6 +133,7 @@ public class CommandeServiceImpl implements CommandeService {
     public CommandeResponse annuler(Long id) {
         Commande commande = commandeRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Commande non trouvée"));
+        verifierAccesCommande(commande);
 
         if (commande.getStatus() == Commande.StatusCommande.VALIDATED) {
             throw new BusinessException("Une commande VALIDATED ne peut pas être annulée");
@@ -126,6 +151,7 @@ public class CommandeServiceImpl implements CommandeService {
     public void supprimer(Long id) {
         Commande commande = commandeRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Commande non trouvée"));
+        verifierAccesCommande(commande);
 
         if (commande.getStatus() == Commande.StatusCommande.VALIDATED) {
             throw new BusinessException("Impossible de supprimer une commande VALIDATED");
@@ -138,6 +164,33 @@ public class CommandeServiceImpl implements CommandeService {
     public BigDecimal chiffreAffairesGlobal() {
         BigDecimal total = commandeRepository.calculerChiffreAffairesGlobal();
         return total != null ? total : BigDecimal.ZERO;
+    }
+
+    // --- Sécurité ---
+
+    private boolean isAdmin() {
+        return SecurityContextHolder.getContext().getAuthentication().getAuthorities()
+                .stream()
+                .anyMatch(a -> a.getAuthority().equals("ROLE_ADMIN"));
+    }
+
+    private Client getClientConnecte() {
+        String username = SecurityContextHolder.getContext().getAuthentication().getName();
+        Utilisateur utilisateur = utilisateurRepository.findByUsername(username)
+                .orElseThrow(() -> new ResourceNotFoundException("Utilisateur non trouvé"));
+
+        return clientRepository.findByUtilisateurId(utilisateur.getId())
+                .orElseThrow(() -> new BusinessException(
+                        "Aucun profil client associé à cet utilisateur"));
+    }
+
+    private void verifierAccesCommande(Commande commande) {
+        if (isAdmin()) {
+            return;
+        }
+        if (!commande.getClient().getId().equals(getClientConnecte().getId())) {
+            throw new AccessDeniedException("Accès refusé à cette commande");
+        }
     }
 
     // --- Mapping ---
